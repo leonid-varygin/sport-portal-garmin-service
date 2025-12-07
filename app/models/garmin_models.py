@@ -56,7 +56,7 @@ class GarminActivity(BaseModel):
     activity_type: str
     start_time: datetime
     end_time: Optional[datetime] = None
-    duration: Optional[int] = None  # в секундах
+    duration: Optional[float] = None  # в секундах
     distance: Optional[float] = None  # в метрах
     average_hr: Optional[int] = None
     max_hr: Optional[int] = None

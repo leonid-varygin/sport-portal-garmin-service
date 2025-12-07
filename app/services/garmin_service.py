@@ -437,18 +437,36 @@ class GarminService:
     async def _send_activity_to_backend(self, user_id: int, activity: GarminActivity) -> bool:
         """Отправка активности на основной бэкенд"""
         try:
+            # Конвертируем datetime в ISO строки для JSON сериализации
+            activity_dict = activity.dict()
+            if 'start_time' in activity_dict and activity_dict['start_time']:
+                activity_dict['start_time'] = activity_dict['start_time'].isoformat()
+            if 'end_time' in activity_dict and activity_dict['end_time']:
+                activity_dict['end_time'] = activity_dict['end_time'].isoformat()
+            
+            activity_data = {
+                "user_id": user_id,
+                "activity": activity_dict
+            }
+            
+            logger.info(f"Sending Garmin activity {activity.activity_id} to backend")
+            
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{settings.backend_url}/garmin/activity",
-                    json={
-                        "user_id": user_id,
-                        "activity": activity.dict()
-                    },
+                    json=activity_data,
                     timeout=30.0
                 )
+                
+                logger.info(f"Backend response status: {response.status_code}")
+                if response.status_code != 200:
+                    logger.warning(f"Backend response body: {response.text}")
+                else:
+                    logger.info(f"Successfully synced Garmin activity {activity.activity_id}")
+                
                 return response.status_code == 200
         except Exception as e:
-            logger.error(f"Failed to send Garmin activity to backend: {str(e)}")
+            logger.error(f"Failed to send Garmin activity {activity.activity_id} to backend: {str(e)}")
             return False
     
     async def _notify_backend_disconnection(self, user_id: int):
