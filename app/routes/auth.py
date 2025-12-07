@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 from ..models import GarminAuthRequest, GarminAuthResponse
-from ..services.garmin_service import garmin_service
+from ..services.auth_service import garmin_auth_service
 from ..config import settings
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -24,7 +24,7 @@ async def login(
     Supports both password and OAuth authentication
     """
     try:
-        response = await garmin_service.authenticate(
+        response = await garmin_auth_service.authenticate(
             username=auth_request.username,
             password=auth_request.password,
             oauth_code=auth_request.oauth_code
@@ -47,7 +47,7 @@ async def logout(
     Logout and remove session
     """
     try:
-        success = garmin_service.logout(token)
+        success = garmin_auth_service.logout(token)
         if not success:
             raise HTTPException(status_code=404, detail="Session not found")
             
@@ -65,7 +65,7 @@ async def verify_token(
     Verify if token is still valid
     """
     try:
-        client = garmin_service.get_client(token)
+        client = garmin_auth_service.get_client(token)
         if not client:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
             

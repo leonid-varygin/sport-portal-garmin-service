@@ -160,3 +160,28 @@ class HealthMetricsSyncResponse(BaseModel):
     errors: List[str] = []
     last_sync_time: Optional[datetime] = None
     metrics_type: str  # 'basic' or 'advanced'
+
+# FIT File Models
+class FitFileInfo(BaseModel):
+    activity_id: str
+    activity_name: str
+    start_time: Optional[str] = None
+    activity_type: str
+    file_size: int
+    downloaded_at: datetime
+    fit_data: Optional[bytes] = None  # Binary data (optional for large files)
+
+class FitFilesResponse(BaseModel):
+    success: bool
+    downloaded_files: int
+    total_activities: int
+    errors_count: int
+    period: Dict[str, str]
+    files: List[FitFileInfo]
+    errors: List[str] = []
+
+class FitDownloadRequest(BaseModel):
+    token: str
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    activity_ids: Optional[List[str]] = None
