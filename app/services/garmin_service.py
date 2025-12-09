@@ -279,40 +279,57 @@ class GarminService:
             )
     
     async def _restore_session(self, user_id: int) -> bool:
-        """Восстановление сессии пользователя"""
+        """Восстановление сессии пользователя с улучшенной обработкой ошибок"""
         try:
             # Получаем сохраненные токены с бэкенда
             tokens = await self._get_tokens_from_backend(user_id)
             if not tokens:
+                logger.warning(f"No tokens found for user {user_id}")
                 return False
             
-            # Создаем новый клиент и выполняем вход
+            # Проверяем наличие обязательных полей
+            if not tokens.get('username') or not tokens.get('password'):
+                logger.error(f"Invalid tokens for user {user_id}: missing username or password")
+                return False
+            
+            # Создаем новый клиент и выполняем вход с несколькими попытками
             garmin_client = Garmin(tokens['username'], tokens['password'])
             loop = asyncio.get_event_loop()
             
-            # Пробуем войти с несколькими попытками
-            for attempt in range(3):
+            # Пробуем войти с несколькими попытками и экспоненциальной задержкой
+            for attempt in range(5):
                 try:
+                    logger.info(f"Attempting Garmin login for user {user_id}, attempt {attempt + 1}/5")
                     await loop.run_in_executor(None, garmin_client.login)
-                    break
+                    
+                    logger.info(f"Successfully logged in user {user_id} on attempt {attempt + 1}")
+                    
+                    # Сохраняем сессию
+                    self.active_sessions[user_id] = garmin_client
+                    self.session_cache[user_id] = {
+                        'username': tokens['username'],
+                        'password': tokens['password'],
+                        'garmin_user_id': tokens.get('garmin_user_id', ''),
+                        'display_name': tokens.get('display_name', ''),
+                        'created_at': datetime.now(),
+                        'last_used': datetime.now()
+                    }
+                    
+                    return True
+                    
                 except Exception as e:
-                    if attempt == 2:
+                    logger.warning(f"Garmin login attempt {attempt + 1} failed for user {user_id}: {str(e)}")
+                    
+                    if attempt == 4:  # Последняя попытка
+                        logger.error(f"All Garmin login attempts failed for user {user_id}")
                         raise e
-                    logger.warning(f"Garmin login attempt {attempt + 1} failed, retrying...")
-                    await asyncio.sleep(2)
+                    
+                    # Экспоненциальная задержка: 2с, 4с, 8с, 16с
+                    delay = min(2 ** attempt, 16)
+                    logger.info(f"Waiting {delay}s before retry for user {user_id}")
+                    await asyncio.sleep(delay)
             
-            # Сохраняем сессию
-            self.active_sessions[user_id] = garmin_client
-            self.session_cache[user_id] = {
-                'username': tokens['username'],
-                'password': tokens['password'],
-                'garmin_user_id': tokens.get('garmin_user_id', ''),
-                'display_name': tokens.get('display_name', ''),
-                'created_at': datetime.now(),
-                'last_used': datetime.now()
-            }
-            
-            return True
+            return False
             
         except Exception as e:
             logger.error(f"Failed to restore Garmin session for user {user_id}: {str(e)}")
@@ -321,7 +338,7 @@ class GarminService:
     async def _ensure_valid_session(self, user_id: int) -> Optional[Garmin]:
         """
         Убедиться что сессия пользователя активна и валидна
-        Автоматически восстанавливает сессию если необходимо
+        Автоматически восстанавливает сессию если необходимо с улучшенной обработкой ошибок
         
         Args:
             user_id: ID пользователя
@@ -332,6 +349,7 @@ class GarminService:
         try:
             # Если сессии нет, пробуем восстановить
             if user_id not in self.active_sessions:
+                logger.info(f"No active session for user {user_id}, attempting to restore")
                 restored = await self._restore_session(user_id)
                 return self.active_sessions.get(user_id) if restored else None
             
@@ -351,11 +369,33 @@ class GarminService:
             except Exception as e:
                 logger.warning(f"Garmin session invalid for user {user_id}, attempting refresh: {str(e)}")
                 
-                # Сессия недействительна, пробуем восстановить
+                # Сессия недействительна, пробуем восстановить с несколькими попытками
                 await self._cleanup_session(user_id)
-                restored = await self._restore_session(user_id)
                 
-                return self.active_sessions.get(user_id) if restored else None
+                # Пробуем восстановить с несколькими попытками
+                for attempt in range(3):
+                    try:
+                        logger.info(f"Attempting to restore Garmin session for user {user_id}, attempt {attempt + 1}")
+                        restored = await self._restore_session(user_id)
+                        
+                        if restored:
+                            logger.info(f"Successfully restored Garmin session for user {user_id} on attempt {attempt + 1}")
+                            return self.active_sessions.get(user_id)
+                        
+                        # Если не удалось, ждем перед следующей попыткой
+                        if attempt < 2:
+                            delay = 2 ** attempt  # Экспоненциальная задержка
+                            logger.info(f"Waiting {delay}s before next restore attempt for user {user_id}")
+                            await asyncio.sleep(delay)
+                            
+                    except Exception as restore_error:
+                        logger.error(f"Restore attempt {attempt + 1} failed for user {user_id}: {str(restore_error)}")
+                        if attempt < 2:
+                            delay = 2 ** attempt
+                            await asyncio.sleep(delay)
+                
+                logger.error(f"Failed to restore Garmin session for user {user_id} after 3 attempts")
+                return None
                 
         except Exception as e:
             logger.error(f"Error ensuring valid Garmin session for user {user_id}: {str(e)}")
@@ -424,15 +464,23 @@ class GarminService:
             # Не прерываем процесс, так как это не критично для авторизации
     
     async def _get_tokens_from_backend(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Получение токенов с основного бэкенда"""
+        """Получение токенов с основного бэкенда с улучшенной обработкой ошибок"""
         try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{settings.backend_url}/garmin/get-tokens/{user_id}",
-                        timeout=10.0
-                    )
-                if response.status_code == 200:
-                    return response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{settings.backend_url}/garmin/get-tokens/{user_id}",
+                    timeout=10.0
+                )
+            if response.status_code == 200:
+                data = response.json()
+                tokens = data.get('tokens')
+                if tokens and tokens.get('username') and tokens.get('password'):
+                    return tokens
+                else:
+                    logger.warning(f"Invalid tokens format for user {user_id}: missing username or password")
+                    return None
+            else:
+                logger.warning(f"Backend returned status {response.status_code} for user {user_id}")
                 return None
         except Exception as e:
             logger.error(f"Failed to get Garmin tokens from backend: {str(e)}")
@@ -615,40 +663,40 @@ class GarminService:
         try:
             logger.info(f"Sending FIT file {fit_path} to backend for activity {activity_id}")
             
-                # Открываем FIT файл для отправки
-                with open(fit_path, 'rb') as fit_file:
-                    files = {
-                        'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')
-                    }
-                    data = {
-                        'user_id': str(user_id),
-                        'source': 'garmin_fit_download',
-                        'garmin_activity_id': activity_id
-                    }
+            # Открываем FIT файл для отправки
+            with open(fit_path, 'rb') as fit_file:
+                files = {
+                    'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')
+                }
+                data = {
+                    'user_id': str(user_id),
+                    'source': 'garmin_fit_download',
+                    'garmin_activity_id': activity_id
+                }
+            
+            # Пробуем отправить без авторизации (если эндпоинт позволяет)
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{settings.backend_url}/activities/garmin-upload",
+                    files=files,
+                    data=data,
+                    timeout=60.0
+                )
                 
-                # Пробуем отправить без авторизации (если эндпоинт позволяет)
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{settings.backend_url}/activities/garmin-upload",
-                        files=files,
-                        data=data,
-                        timeout=60.0
-                    )
+                logger.info(f"Backend FIT upload response status: {response.status_code}")
+                if response.status_code == 200:
+                    logger.info(f"Successfully sent FIT file for activity {activity_id}")
+                else:
+                    logger.warning(f"Backend FIT upload response: {response.text}")
                     
-                    logger.info(f"Backend FIT upload response status: {response.status_code}")
-                    if response.status_code == 200:
-                        logger.info(f"Successfully sent FIT file for activity {activity_id}")
-                    else:
-                        logger.warning(f"Backend FIT upload response: {response.text}")
-                        
-                        # Если 401 (не авторизован), пробуем получить токены и повторить
-                        if response.status_code == 401:
-                            logger.info("Got 401, trying to get tokens and retry...")
-                            tokens = await self._get_tokens_from_backend(user_id)
-                            if tokens:
-                                # Здесь нужно получить JWT токен пользователя, но у нас нет прямого доступа
-                                # Пока просто логируем проблему
-                                logger.warning("Cannot retry - need user JWT token for backend authentication")
+                    # Если 401 (не авторизован), пробуем получить токены и повторить
+                    if response.status_code == 401:
+                        logger.info("Got 401, trying to get tokens and retry...")
+                        tokens = await self._get_tokens_from_backend(user_id)
+                        if tokens:
+                            # Здесь нужно получить JWT токен пользователя, но у нас нет прямого доступа
+                            # Пока просто логируем проблему
+                            logger.warning("Cannot retry - need user JWT token for backend authentication")
                         
         except Exception as e:
             logger.error(f"Failed to send FIT file to backend for activity {activity_id}: {str(e)}")
