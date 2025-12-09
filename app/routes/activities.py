@@ -203,10 +203,14 @@ async def initial_sync_activities(
                     async with httpx.AsyncClient() as client:
                         with open(fit_path, 'rb') as fit_file:
                             files = {'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')}
-                            data = {'user_id': user_id, 'source': 'garmin_initial_sync'}
+                            data = {
+                                'user_id': user_id, 
+                                'source': 'garmin_initial_sync',
+                                'garmin_activity_id': activity.activity_id
+                            }
                             
                             upload_response = await client.post(
-                                f"{garmin_service.backend_url}/activities/upload",
+                                f"{garmin_service.backend_url}/activities/garmin-upload",
                                 files=files,
                                 data=data,
                                 timeout=60.0

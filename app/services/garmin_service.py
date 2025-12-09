@@ -615,15 +615,16 @@ class GarminService:
         try:
             logger.info(f"Sending FIT file {fit_path} to backend for activity {activity_id}")
             
-            # Открываем FIT файл для отправки
-            with open(fit_path, 'rb') as fit_file:
-                files = {
-                    'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')
-                }
-                data = {
-                    'user_id': str(user_id),
-                    'source': 'garmin_fit_download'
-                }
+                # Открываем FIT файл для отправки
+                with open(fit_path, 'rb') as fit_file:
+                    files = {
+                        'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')
+                    }
+                    data = {
+                        'user_id': str(user_id),
+                        'source': 'garmin_fit_download',
+                        'garmin_activity_id': activity_id
+                    }
                 
                 # Пробуем отправить без авторизации (если эндпоинт позволяет)
                 async with httpx.AsyncClient() as client:
