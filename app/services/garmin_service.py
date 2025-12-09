@@ -3,6 +3,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 import httpx
+import zipfile
+import tempfile
+import os
 
 from garminconnect import Garmin
 
@@ -26,6 +29,7 @@ class GarminService:
     def __init__(self):
         self.active_sessions: Dict[int, Garmin] = {}  # user_id -> Garmin client
         self.session_cache: Dict[int, Dict[str, Any]] = {}  # Кеш сессий
+        self.backend_url = settings.backend_url
         
     async def authenticate(self, auth_request: GarminAuthRequest) -> GarminAuthResponse:
         """
@@ -468,6 +472,120 @@ class GarminService:
         except Exception as e:
             logger.error(f"Failed to send Garmin activity {activity.activity_id} to backend: {str(e)}")
             return False
+    
+    async def get_initial_activities(self, user_id: int, limit: int = 200) -> List[GarminActivity]:
+        """
+        Получить последние активности пользователя (для первоначальной синхронизации)
+        
+        Args:
+            user_id: ID пользователя
+            limit: Количество активностей для получения (по умолчанию 200)
+            
+        Returns:
+            List[GarminActivity]: Список последних активностей
+        """
+        try:
+            # Убедимся что сессия активна и валидна
+            garmin_client = await self._ensure_valid_session(user_id)
+            if not garmin_client:
+                raise Exception("Нет активного подключения к Garmin")
+            
+            loop = asyncio.get_event_loop()
+            
+            # Получаем все активности без ограничения по дате
+            activities_data = await loop.run_in_executor(None, garmin_client.get_activities)
+            
+            if not activities_data:
+                return []
+            
+            # Сортируем по дате начала (новые первые) и ограничиваем количество
+            activities_data.sort(key=lambda x: x.get('startTimeLocal', ''), reverse=True)
+            limited_data = activities_data[:limit]
+            
+            # Конвертируем в нашу модель
+            activities = []
+            for activity in limited_data:
+                garmin_activity = self._convert_to_garmin_activity(activity)
+                if garmin_activity:
+                    activities.append(garmin_activity)
+            
+            # Обновляем время последнего использования сессии
+            if user_id in self.session_cache:
+                self.session_cache[user_id]['last_used'] = datetime.now()
+            
+            return activities
+            
+        except Exception as e:
+            logger.error(f"Error getting initial Garmin activities for user {user_id}: {str(e)}")
+            raise Exception(f"Ошибка получения последних активностей: {str(e)}")
+    
+    async def download_fit_file(self, user_id: int, activity_id: str) -> Optional[str]:
+        """
+        Скачать .fit файл активности и вернуть путь к нему
+        
+        Args:
+            user_id: ID пользователя
+            activity_id: ID активности
+            
+        Returns:
+            Optional[str]: Путь к .fit файлу или None в случае ошибки
+        """
+        try:
+            # Убедимся что сессия активна и валидна
+            garmin_client = await self._ensure_valid_session(user_id)
+            if not garmin_client:
+                raise Exception("Нет активного подключения к Garmin")
+            
+            loop = asyncio.get_event_loop()
+            
+            # Скачиваем zip архив
+            logger.info(f"Downloading FIT file for activity {activity_id}")
+            content = await loop.run_in_executor(
+                None, 
+                garmin_client.download_activity, 
+                activity_id, 
+                garmin_client.ActivityDownloadFormat.ORIGINAL
+            )
+            
+            if not content:
+                logger.error(f"No content received for activity {activity_id}")
+                return None
+            
+            # Создаем временную директорию
+            temp_dir = tempfile.mkdtemp(prefix=f"garmin_{user_id}_")
+            zip_path = os.path.join(temp_dir, f"{activity_id}.zip")
+            
+            # Сохраняем zip файл
+            with open(zip_path, 'wb') as f:
+                f.write(content)
+            
+            # Распаковываем архив
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            # Ищем .fit файл
+            for file in os.listdir(temp_dir):
+                if file.endswith('.fit'):
+                    fit_path = os.path.join(temp_dir, file)
+                    logger.info(f"Successfully extracted FIT file: {fit_path}")
+                    return fit_path
+            
+            # Если .fit файл не найден
+            logger.error(f"No .fit file found in archive for activity {activity_id}")
+            self._cleanup_temp_directory(temp_dir)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error downloading FIT file for activity {activity_id}: {str(e)}")
+            return None
+    
+    def _cleanup_temp_directory(self, temp_dir: str):
+        """Очистка временной директории"""
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp directory {temp_dir}: {str(e)}")
     
     async def _notify_backend_disconnection(self, user_id: int):
         """Уведомление бэкенда об отключении"""

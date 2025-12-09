@@ -75,6 +75,18 @@ class GarminSyncResult(BaseModel):
     message: str
 
 
+class GarminInitialSyncResult(BaseModel):
+    """Результат первоначальной синхронизации активностей"""
+    success: bool
+    total_activities: int = 0
+    downloaded: int = 0
+    processed: int = 0
+    skipped_duplicates: int = 0
+    errors: List[str] = Field(default_factory=list)
+    message: str
+    fit_files_downloaded: List[str] = Field(default_factory=list)  # Пути к скачанным .fit файлам
+
+
 class GarminError(BaseModel):
     """Модель ошибки Garmin"""
     error_code: str
