@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     allowed_origins: str = '["http://localhost:3000", "http://localhost:8080"]'
     
     # Настройки для подключения к основному бэкенду
-    backend_url: str = "http://localhost:3001"  # URL основного бэкенда
+    backend_url: str = "http://host.docker.internal:3001/api"  # URL основного бэкенда (с префиксом /api)
     
     # Настройки безопасности
     secret_key: str = "your-secret-key-change-in-production"

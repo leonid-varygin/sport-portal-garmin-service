@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.requests import Request
+from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import List, Optional
 import os
@@ -314,4 +315,53 @@ async def get_activities_summary(
         raise HTTPException(
             status_code=500,
             detail=f"Ошибка получения сводной статистики: {str(e)}"
+        )
+
+
+class DownloadRequest(BaseModel):
+    activity_id: str
+
+
+class DownloadResponse(BaseModel):
+    success: bool
+    fit_path: Optional[str] = None
+    message: str
+
+
+@router.post("/download-fit/{user_id}", response_model=DownloadResponse)
+async def download_fit_file(
+    user_id: int, 
+    request: DownloadRequest,
+    garmin_service: GarminService = Depends(get_garmin_service)
+):
+    """
+    Скачать FIT файл активности
+    
+    Args:
+        user_id: ID пользователя
+        request: Запрос с activity_id
+        garmin_service: Сервис Garmin
+        
+    Returns:
+        DownloadResponse: Результат скачивания файла
+    """
+    try:
+        fit_path = await garmin_service.download_fit_file(user_id, request.activity_id)
+        
+        if fit_path:
+            return DownloadResponse(
+                success=True,
+                fit_path=fit_path,
+                message=f"FIT файл успешно скачан: {fit_path}"
+            )
+        else:
+            return DownloadResponse(
+                success=False,
+                message="Не удалось скачать FIT файл"
+            )
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка скачивания FIT файла: {str(e)}"
         )

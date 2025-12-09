@@ -426,11 +426,11 @@ class GarminService:
     async def _get_tokens_from_backend(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Получение токенов с основного бэкенда"""
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{settings.backend_url}/garmin/get-tokens/{user_id}",
-                    timeout=10.0
-                )
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{settings.backend_url}/garmin/get-tokens/{user_id}",
+                        timeout=10.0
+                    )
                 if response.status_code == 200:
                     return response.json()
                 return None
@@ -568,6 +568,10 @@ class GarminService:
                 if file.endswith('.fit'):
                     fit_path = os.path.join(temp_dir, file)
                     logger.info(f"Successfully extracted FIT file: {fit_path}")
+                    
+                    # Отправляем FIT файл на бэкенд для обработки
+                    await self._send_fit_file_to_backend(user_id, fit_path, activity_id)
+                    
                     return fit_path
             
             # Если .fit файл не найден
@@ -598,3 +602,52 @@ class GarminService:
                 response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to notify backend about Garmin disconnection: {str(e)}")
+    
+    async def _send_fit_file_to_backend(self, user_id: int, fit_path: str, activity_id: str):
+        """
+        Отправить FIT файл на бэкенд для обработки
+        
+        Args:
+            user_id: ID пользователя
+            fit_path: Путь к FIT файлу
+            activity_id: ID активности
+        """
+        try:
+            logger.info(f"Sending FIT file {fit_path} to backend for activity {activity_id}")
+            
+            # Открываем FIT файл для отправки
+            with open(fit_path, 'rb') as fit_file:
+                files = {
+                    'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')
+                }
+                data = {
+                    'user_id': str(user_id),
+                    'source': 'garmin_fit_download'
+                }
+                
+                # Пробуем отправить без авторизации (если эндпоинт позволяет)
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{settings.backend_url}/activities/garmin-upload",
+                        files=files,
+                        data=data,
+                        timeout=60.0
+                    )
+                    
+                    logger.info(f"Backend FIT upload response status: {response.status_code}")
+                    if response.status_code == 200:
+                        logger.info(f"Successfully sent FIT file for activity {activity_id}")
+                    else:
+                        logger.warning(f"Backend FIT upload response: {response.text}")
+                        
+                        # Если 401 (не авторизован), пробуем получить токены и повторить
+                        if response.status_code == 401:
+                            logger.info("Got 401, trying to get tokens and retry...")
+                            tokens = await self._get_tokens_from_backend(user_id)
+                            if tokens:
+                                # Здесь нужно получить JWT токен пользователя, но у нас нет прямого доступа
+                                # Пока просто логируем проблему
+                                logger.warning("Cannot retry - need user JWT token for backend authentication")
+                        
+        except Exception as e:
+            logger.error(f"Failed to send FIT file to backend for activity {activity_id}: {str(e)}")
