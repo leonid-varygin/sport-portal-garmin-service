@@ -124,3 +124,28 @@ async def refresh_session(
             status_code=500,
             detail=f"Ошибка обновления сессии: {str(e)}"
         )
+
+
+@router.get("/token-info/{user_id}")
+async def get_token_info(
+    user_id: int,
+    garmin_service: GarminService = Depends(get_garmin_service)
+):
+    """
+    Получить информацию о токенах пользователя
+    
+    Args:
+        user_id: ID пользователя
+        garmin_service: Сервис Garmin
+        
+    Returns:
+        Dict: Информация о токенах
+    """
+    try:
+        token_info = await garmin_service.get_token_info(user_id)
+        return token_info
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка получения информации о токенах: {str(e)}"
+        )

@@ -19,6 +19,7 @@ from app.models.garmin_models import (
     GarminAuthStatus,
     GarminError
 )
+from app.services.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,14 @@ class GarminService:
                 'created_at': datetime.now(),
                 'last_used': datetime.now()
             }
+            
+            # Сохраняем токены в файлы для автоматической переавторизации
+            token_manager = TokenManager(auth_request.user_id)
+            token_save_success = token_manager.save_tokens(garmin_client)
+            if token_save_success:
+                logger.info(f"Successfully saved tokens to files for user {auth_request.user_id}")
+            else:
+                logger.warning(f"Failed to save tokens to files for user {auth_request.user_id}")
             
             # Отправляем токены в основной бэкенд для сохранения
             await self._save_tokens_to_backend(
@@ -162,6 +171,10 @@ class GarminService:
         """
         try:
             await self._cleanup_session(user_id)
+            
+            # Удаляем сохраненные токены
+            token_manager = TokenManager(user_id)
+            token_manager.delete_tokens()
             
             # Уведомляем бэкенд об отключении
             await self._notify_backend_disconnection(user_id)
@@ -279,9 +292,50 @@ class GarminService:
             )
     
     async def _restore_session(self, user_id: int) -> bool:
-        """Восстановление сессии пользователя с улучшенной обработкой ошибок"""
+        """Восстановление сессии пользователя с автоматической переавторизацией"""
         try:
-            # Получаем сохраненные токены с бэкенда
+            # Сначала пробуем восстановить из файлов токенов
+            token_manager = TokenManager(user_id)
+            
+            if token_manager.are_tokens_valid():
+                logger.info(f"Found valid tokens in files for user {user_id}, attempting token restoration")
+                
+                try:
+                    # Пробуем создать клиент с токенами
+                    garmin_client = Garmin()
+                    
+                    # Восстанавливаем токены в клиенте
+                    if token_manager.restore_tokens_to_client(garmin_client):
+                        # Проверяем валидность сессии
+                        loop = asyncio.get_event_loop()
+                        try:
+                            user_info = await loop.run_in_executor(None, garmin_client.get_user_profile)
+                            logger.info(f"Successfully restored session from tokens for user {user_id}")
+                            
+                            # Сохраняем сессию
+                            self.active_sessions[user_id] = garmin_client
+                            self.session_cache[user_id] = {
+                                'username': '',  # Не храним пароль при восстановлении из токенов
+                                'password': '',  # Не храним пароль при восстановлении из токенов
+                                'garmin_user_id': str(user_info.get('displayName', '')),
+                                'display_name': user_info.get('displayName', ''),
+                                'created_at': datetime.now(),
+                                'last_used': datetime.now(),
+                                'restored_from_tokens': True
+                            }
+                            
+                            return True
+                            
+                        except Exception as token_error:
+                            logger.warning(f"Token restoration failed for user {user_id}: {str(token_error)}")
+                            # Токены невалидны, удаляем их
+                            token_manager.delete_tokens()
+                            logger.info(f"Deleted invalid tokens for user {user_id}")
+                except Exception as restore_error:
+                    logger.warning(f"Failed to restore tokens for user {user_id}: {str(restore_error)}")
+            
+            # Если не удалось восстановить из токенов, пробуем получить данные с бэкенда
+            logger.info(f"Attempting to restore session from backend for user {user_id}")
             tokens = await self._get_tokens_from_backend(user_id)
             if not tokens:
                 logger.warning(f"No tokens found for user {user_id}")
@@ -312,8 +366,16 @@ class GarminService:
                         'garmin_user_id': tokens.get('garmin_user_id', ''),
                         'display_name': tokens.get('display_name', ''),
                         'created_at': datetime.now(),
-                        'last_used': datetime.now()
+                        'last_used': datetime.now(),
+                        'restored_from_tokens': False
                     }
+                    
+                    # Сохраняем токены в файлы для будущего использования
+                    token_save_success = token_manager.save_tokens(garmin_client)
+                    if token_save_success:
+                        logger.info(f"Successfully saved tokens to files after login for user {user_id}")
+                    else:
+                        logger.warning(f"Failed to save tokens to files after login for user {user_id}")
                     
                     return True
                     
@@ -651,6 +713,44 @@ class GarminService:
         except Exception as e:
             logger.error(f"Failed to notify backend about Garmin disconnection: {str(e)}")
     
+    async def get_token_info(self, user_id: int) -> Dict[str, Any]:
+        """
+        Получить информацию о токенах пользователя
+        
+        Args:
+            user_id: ID пользователя
+            
+        Returns:
+            Dict[str, Any]: Информация о токенах
+        """
+        try:
+            token_manager = TokenManager(user_id)
+            token_info = token_manager.get_token_info()
+            
+            # Добавляем информацию о сессии
+            if user_id in self.session_cache:
+                session_info = self.session_cache[user_id]
+                token_info.update({
+                    'has_active_session': True,
+                    'session_created_at': session_info.get('created_at'),
+                    'session_last_used': session_info.get('last_used'),
+                    'restored_from_tokens': session_info.get('restored_from_tokens', False)
+                })
+            else:
+                token_info['has_active_session'] = False
+                token_info['restored_from_tokens'] = False
+            
+            return token_info
+            
+        except Exception as e:
+            logger.error(f"Failed to get token info for user {user_id}: {str(e)}")
+            return {
+                'user_id': user_id,
+                'error': str(e),
+                'tokens_valid': False,
+                'has_active_session': False
+            }
+
     async def _send_fit_file_to_backend(self, user_id: int, fit_path: str, activity_id: str):
         """
         Отправить FIT файл на бэкенд для обработки
