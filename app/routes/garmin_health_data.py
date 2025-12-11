@@ -63,10 +63,10 @@ class GarminHealthDataAPI:
                 if weight:
                     if weight > 1000:
                         weight = weight / 1000
-                    return f"{weight:.1f} kg"
-            return "Нет данных"
+                    return round(weight, 1)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_body_fat_data(self, date: str) -> Any:
         """Получить данные о проценте жира."""
@@ -75,10 +75,10 @@ class GarminHealthDataAPI:
             if body_comp and "dateWeightList" in body_comp and body_comp["dateWeightList"]:
                 fat_percent = body_comp["dateWeightList"][0].get("bodyFat")
                 if fat_percent is not None:
-                    return f"{fat_percent:.1f}%"
-            return "Нет данных"
+                    return round(fat_percent, 1)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_resting_hr_data(self, date: str) -> Any:
         """Получить данные о пульсе в покое."""
@@ -91,10 +91,10 @@ class GarminHealthDataAPI:
                     if rhr_list and len(rhr_list) > 0:
                         rhr_value = rhr_list[0].get("value")
                         if rhr_value is not None and rhr_value > 0:
-                            return f"{rhr_value} bpm"
-            return "Нет данных"
+                            return round(float(rhr_value), 1)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_calories_data(self, date: str) -> Any:
         """Получить данные о калориях."""
@@ -103,14 +103,16 @@ class GarminHealthDataAPI:
             if summary:
                 total_calories = summary.get("totalKilocalories")
                 active_calories = summary.get("activeKilocalories")
-                if total_calories:
-                    result = f"{total_calories} kcal"
-                    if active_calories:
-                        result += f" (активные: {active_calories})"
+                if total_calories is not None:
+                    result = {
+                        "total": float(total_calories)
+                    }
+                    if active_calories is not None:
+                        result["active"] = float(active_calories)
                     return result
-            return "Нет данных"
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_sleep_data(self, date: str) -> Any:
         """Получить данные о сне."""
@@ -120,12 +122,10 @@ class GarminHealthDataAPI:
                 sleep_dto = sleep_data["dailySleepDTO"]
                 sleep_seconds = sleep_dto.get("sleepTimeSeconds", 0)
                 if sleep_seconds > 0:
-                    hours = sleep_seconds // 3600
-                    minutes = (sleep_seconds % 3600) // 60
-                    return f"{hours}ч {minutes}мин"
-            return "Нет данных"
+                    return int(sleep_seconds // 60)  # возвращаем минуты
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_sleep_score_data(self, date: str) -> Any:
         """Получить оценку сна."""
@@ -138,10 +138,10 @@ class GarminHealthDataAPI:
                     overall_score = sleep_scores["overall"]
                     score_value = overall_score.get("value")
                     if score_value is not None:
-                        return f"{score_value}/100"
-            return "Нет данных"
+                        return int(score_value)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_sleep_quality_data(self, date: str) -> Any:
         """Получить качество сна."""
@@ -161,16 +161,16 @@ class GarminHealthDataAPI:
                         rem_percent = (rem_sleep / sleep_seconds) * 100
                         
                         if deep_percent >= 16 and rem_percent >= 21:
-                            return "Отличное"
+                            return 4  # Отличное
                         elif deep_percent >= 16 and rem_percent >= 15:
-                            return "Хорошее"
+                            return 3  # Хорошее
                         elif deep_percent >= 10 and rem_percent >= 10:
-                            return "Среднее"
+                            return 2  # Среднее
                         else:
-                            return "Плохое"
-            return "Нет данных"
+                            return 1  # Плохое
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_vo2_max_data(self, date: str) -> Any:
         """Получить данные VO2 Max."""
@@ -182,10 +182,10 @@ class GarminHealthDataAPI:
                     generic_data = first_item["generic"]
                     vo2_max = generic_data.get("vo2MaxValue")
                     if vo2_max is not None and vo2_max > 0:
-                        return f"{vo2_max:.1f} mL/kg/min"
-            return "Нет данных"
+                        return round(float(vo2_max), 1)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_spo2_data(self, date: str) -> Any:
         """Получить данные SpO2."""
@@ -205,10 +205,10 @@ class GarminHealthDataAPI:
                         avg_spo2 = total / count if count > 0 else None
                 
                 if avg_spo2 is not None and avg_spo2 > 0:
-                    return f"{avg_spo2:.1f}%"
-            return "Нет данных"
+                    return round(float(avg_spo2), 1)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_hrv_data(self, date: str) -> Any:
         """Получить данные HRV (rMSSD)."""
@@ -218,15 +218,15 @@ class GarminHealthDataAPI:
                 summary = hrv_data["hrvSummary"]
                 rmssd = summary.get("rmssd")
                 if rmssd is not None and rmssd > 0:
-                    return f"{rmssd:.1f} ms"
+                    return round(float(rmssd), 1)
             elif hrv_data and "weeklyAverage" in hrv_data:
                 weekly_avg = hrv_data["weeklyAverage"]
                 rmssd = weekly_avg.get("rmssd")
                 if rmssd is not None and rmssd > 0:
-                    return f"{rmssd:.1f} ms"
-            return "Нет данных"
+                    return round(float(rmssd), 1)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
     def _get_steps_data(self, date: str) -> Any:
         """Получить данные о шагах."""
@@ -234,11 +234,11 @@ class GarminHealthDataAPI:
             summary = self.api.get_user_summary(date)
             if summary and "totalSteps" in summary:
                 steps = summary["totalSteps"]
-                if steps:
-                    return f"{steps:,} шагов"
-            return "Нет данных"
+                if steps is not None:
+                    return int(steps)
+            return None
         except Exception:
-            return "Нет данных"
+            return None
 
 
 # Эндпоинты для шагов (обратная совместимость с daily_steps.py)
@@ -293,15 +293,11 @@ async def get_daily_steps(
                 daily_data = await health_api.get_daily_health_data(date_str)
                 steps_metric = daily_data["metrics"].get("Steps", {})
                 
-                # Извлекаем количество шагов из строки
+                # Теперь steps_metric - это число или None
                 steps = 0
-                if isinstance(steps_metric, str) and "шагов" in steps_metric:
-                    steps_str = steps_metric.replace(" ", "").replace("шагов", "")
-                    try:
-                        steps = int(steps_str)
-                    except ValueError:
-                        steps = 0
-                elif isinstance(steps_metric, dict):
+                if isinstance(steps_metric, int):
+                    steps = steps_metric
+                elif steps_metric is None:
                     steps = 0
                 
                 steps_data.append({
@@ -370,15 +366,11 @@ async def get_steps_summary(
                 daily_health_data = await health_api.get_daily_health_data(date_str)
                 steps_metric = daily_health_data["metrics"].get("Steps", {})
                 
-                # Извлекаем количество шагов из строки
+                # Теперь steps_metric - это число или None
                 steps = 0
-                if isinstance(steps_metric, str) and "шагов" in steps_metric:
-                    steps_str = steps_metric.replace(" ", "").replace("шагов", "")
-                    try:
-                        steps = int(steps_str)
-                    except ValueError:
-                        steps = 0
-                elif isinstance(steps_metric, dict):
+                if isinstance(steps_metric, int):
+                    steps = steps_metric
+                elif steps_metric is None:
                     steps = 0
                 
                 total_steps += steps
