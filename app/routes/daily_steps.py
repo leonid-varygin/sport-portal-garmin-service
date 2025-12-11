@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.requests import Request
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import asyncio
 
 from app.services.garmin_service import GarminService
+from app.routes.garmin_health_data import GarminHealthDataAPI
 
 router = APIRouter()
 
@@ -58,37 +59,41 @@ async def get_daily_steps(
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         
-        # Получаем данные о шагах из Garmin Connect
-        loop = asyncio.get_event_loop()
-        
-        # Получаем все данные за период одним запросом
-        daily_steps = await loop.run_in_executor(
-            None, 
-            garmin_client.get_daily_steps, 
-            start_date,
-            end_date
-        )
-        
+        # Используем новый API для получения данных
+        health_api = GarminHealthDataAPI(garmin_client)
         steps_data = []
         
-        # Обрабатываем ответ
-        if daily_steps and isinstance(daily_steps, list) and len(daily_steps) > 0:
-            # Garmin API возвращает массив объектов за период
-            for day_data in daily_steps:
-                date_str = day_data.get('calendarDate', '')
-                steps = day_data.get('totalSteps', 0)
+        current_date = start_dt
+        while current_date <= end_dt:
+            date_str = current_date.strftime("%Y-%m-%d")
+            
+            try:
+                daily_data = await health_api.get_daily_health_data(date_str)
+                steps_metric = daily_data["metrics"].get("Steps", {})
                 
-                if date_str:  # Добавляем только если есть дата
-                    steps_data.append({
-                        'date': date_str,
-                        'steps': steps
-                    })
-        elif isinstance(daily_steps, (int, float)):
-            # Если вернулось одно число (как в тесте), создаем одну запись
-            steps_data.append({
-                'date': start_date,
-                'steps': int(daily_steps)
-            })
+                # Извлекаем количество шагов из строки
+                steps = 0
+                if isinstance(steps_metric, str) and "шагов" in steps_metric:
+                    steps_str = steps_metric.replace(" ", "").replace("шагов", "")
+                    try:
+                        steps = int(steps_str)
+                    except ValueError:
+                        steps = 0
+                elif isinstance(steps_metric, dict):
+                    steps = 0
+                
+                steps_data.append({
+                    'date': date_str,
+                    'steps': steps
+                })
+                    
+            except Exception:
+                steps_data.append({
+                    'date': date_str,
+                    'steps': 0
+                })
+            
+            current_date += timedelta(days=1)
         
         return steps_data
         
@@ -131,8 +136,7 @@ async def get_steps_summary(
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days-1)
         
-        loop = asyncio.get_event_loop()
-        
+        health_api = GarminHealthDataAPI(garmin_client)
         total_steps = 0
         days_with_data = 0
         daily_data = []
@@ -141,29 +145,28 @@ async def get_steps_summary(
         while current_date <= end_date:
             try:
                 date_str = current_date.strftime("%Y-%m-%d")
+                daily_health_data = await health_api.get_daily_health_data(date_str)
+                steps_metric = daily_health_data["metrics"].get("Steps", {})
                 
-                daily_steps = await loop.run_in_executor(
-                    None, 
-                    garmin_client.get_daily_steps, 
-                    date_str, 
-                    date_str
-                )
+                # Извлекаем количество шагов из строки
+                steps = 0
+                if isinstance(steps_metric, str) and "шагов" in steps_metric:
+                    steps_str = steps_metric.replace(" ", "").replace("шагов", "")
+                    try:
+                        steps = int(steps_str)
+                    except ValueError:
+                        steps = 0
+                elif isinstance(steps_metric, dict):
+                    steps = 0
                 
-                if daily_steps and isinstance(daily_steps, list) and len(daily_steps) > 0:
-                    day_data = daily_steps[0]
-                    steps = day_data.get('totalSteps', 0)
-                    total_steps += steps
+                total_steps += steps
+                if steps > 0:
                     days_with_data += 1
-                    
-                    daily_data.append({
-                        'date': date_str,
-                        'steps': steps
-                    })
-                else:
-                    daily_data.append({
-                        'date': date_str,
-                        'steps': 0
-                    })
+                
+                daily_data.append({
+                    'date': date_str,
+                    'steps': steps
+                })
                     
             except Exception:
                 daily_data.append({

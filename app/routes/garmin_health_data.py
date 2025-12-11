@@ -27,59 +27,27 @@ class GarminHealthDataAPI:
             "metrics": {}
         }
         
-        # Словарь с методами API и их параметрами
-        metrics_config = {
-            "Weight": {
-                "method": self._get_weight_data,
-                "params": {"date": date}
-            },
-            "Body Fat": {
-                "method": self._get_body_fat_data,
-                "params": {"date": date}
-            },
-            "Resting HR": {
-                "method": self._get_resting_hr_data,
-                "params": {"date": date}
-            },
-            "kCal": {
-                "method": self._get_calories_data,
-                "params": {"date": date}
-            },
-            "Sleep": {
-                "method": self._get_sleep_data,
-                "params": {"date": date}
-            },
-            "Sleep Score": {
-                "method": self._get_sleep_score_data,
-                "params": {"date": date}
-            },
-            "Sleep Quality": {
-                "method": self._get_sleep_quality_data,
-                "params": {"date": date}
-            },
-            "VO2 Max": {
-                "method": self._get_vo2_max_data,
-                "params": {"date": date}
-            },
-            "SpO2": {
-                "method": self._get_spo2_data,
-                "params": {"date": date}
-            },
-            "HRV (rMSSD)": {
-                "method": self._get_hrv_data,
-                "params": {"date": date}
-            },
-            "Steps": {
-                "method": self._get_steps_data,
-                "params": {"date": date}
-            }
+        # Словарь с методами API
+        metrics_methods = {
+            "Weight": self._get_weight_data,
+            "Body Fat": self._get_body_fat_data,
+            "Resting HR": self._get_resting_hr_data,
+            "kCal": self._get_calories_data,
+            "Sleep": self._get_sleep_data,
+            "Sleep Score": self._get_sleep_score_data,
+            "Sleep Quality": self._get_sleep_quality_data,
+            "VO2 Max": self._get_vo2_max_data,
+            "SpO2": self._get_spo2_data,
+            "HRV (rMSSD)": self._get_hrv_data,
+            "Steps": self._get_steps_data
         }
         
         # Получаем данные для каждой метрики
         loop = asyncio.get_event_loop()
-        for metric_name, config in metrics_config.items():
+        for metric_name, method in metrics_methods.items():
             try:
-                result = await loop.run_in_executor(None, config["method"], **config["params"])
+                # Исправление: передаем аргументы напрямую, а не как kwargs
+                result = await loop.run_in_executor(None, method, date)
                 daily_data["metrics"][metric_name] = result
             except Exception as e:
                 daily_data["metrics"][metric_name] = {"error": str(e)}
