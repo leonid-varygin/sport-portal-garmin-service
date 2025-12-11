@@ -5,7 +5,7 @@ import uvicorn
 import json
 
 from app.config import settings
-from app.routes import auth, activities
+from app.routes import auth, activities, daily_steps
 from app.services.garmin_service import GarminService
 
 
@@ -42,6 +42,7 @@ app.add_middleware(
 # Подключение роутов
 app.include_router(auth.router, prefix="/auth", tags=["authentication"])
 app.include_router(activities.router, prefix="/activities", tags=["activities"])
+app.include_router(daily_steps.router, prefix="/daily-steps", tags=["daily steps"])
 
 
 @app.get("/health")
