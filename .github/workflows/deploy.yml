@@ -1,0 +1,32 @@
+# Автоматический деплой Garmin Service на продакшен
+# Запускается при пуше в ветку master/main
+
+name: Deploy Garmin Service
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Garmin Service to Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo ">>> Деплой Garmin Service: $(date)"
+            cd /home/lvar/sport-portal/garmin-service
+            git fetch --all
+            git reset --hard origin/master
+            cd /home/lvar/sport-portal
+            chmod +x scripts/deploy-garmin.sh
+            ./scripts/deploy-garmin.sh
+            echo ">>> Деплой Garmin Service завершён!"
