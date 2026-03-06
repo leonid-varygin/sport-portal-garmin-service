@@ -17,10 +17,26 @@ from app.services.token_manager import TokenManager
 async def test_token_autorization():
     """Тест автоматической переавторизации"""
     
-    # Тестовые данные (замените на реальные)
-    TEST_USER_ID = 1
-    TEST_USERNAME = "leonid.warygin@gmail.com"
-    TEST_PASSWORD = "OsNvTbi6MCPK"
+    # Тестовые данные - передаются через аргументы командной строки или переменные окружения
+    # Использование: python test_token_auth.py <user_id> <username> <password>
+    # Или установите переменные окружения: GARMIN_TEST_USER_ID, GARMIN_TEST_USERNAME, GARMIN_TEST_PASSWORD
+    
+    import argparse
+    parser = argparse.ArgumentParser(description='Тест авторизации Garmin')
+    parser.add_argument('--user-id', type=int, help='ID пользователя')
+    parser.add_argument('--username', type=str, help='Логин Garmin')
+    parser.add_argument('--password', type=str, help='Пароль Garmin')
+    args = parser.parse_args()
+    
+    TEST_USER_ID = args.user_id or int(os.environ.get('GARMIN_TEST_USER_ID', 0))
+    TEST_USERNAME = args.username or os.environ.get('GARMIN_TEST_USERNAME', '')
+    TEST_PASSWORD = args.password or os.environ.get('GARMIN_TEST_PASSWORD', '')
+    
+    if not TEST_USER_ID or not TEST_USERNAME or not TEST_PASSWORD:
+        print("❌ Укажите данные для авторизации:")
+        print("   python test_token_auth.py --user-id 1 --username user@email.com --password pass")
+        print("   или установите переменные окружения GARMIN_TEST_USER_ID, GARMIN_TEST_USERNAME, GARMIN_TEST_PASSWORD")
+        sys.exit(1)
     
     print("🚀 Начинаем тест автоматической переавторизации...")
     
