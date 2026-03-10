@@ -99,6 +99,137 @@ async def sync_activities(
         )
 
 
+@router.post("/sync-today/{user_id}", response_model=GarminSyncResult)
+async def sync_today_activities(
+    user_id: int,
+    start_date: Optional[str] = Query(None, description="Начальная дата в формате YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="Конечная дата в формате YYYY-MM-DD"),
+    garmin_service: GarminService = Depends(get_garmin_service)
+):
+    """
+    Синхронизировать активности пользователя за сегодня (или указанный период)
+    Используется для ежечасной проверки новых тренировок
+    
+    Args:
+        user_id: ID пользователя
+        start_date: Начальная дата (по умолчанию - начало сегодня)
+        end_date: Конечная дата (по умолчанию - сейчас)
+        garmin_service: Сервис Garmin
+        
+    Returns:
+        GarminSyncResult: Результат синхронизации
+    """
+    try:
+        # Определяем период синхронизации
+        if start_date:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        else:
+            start_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        if end_date:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        else:
+            end_dt = datetime.now()
+        
+        # Получаем активности за указанный период
+        activities = await garmin_service.get_activities(user_id, start_dt, end_dt)
+        
+        if not activities:
+            return GarminSyncResult(
+                success=True,
+                processed=0,
+                skipped_duplicates=0,
+                errors=[],
+                message="Нет новых активностей для синхронизации"
+            )
+        
+        processed = 0
+        skipped_duplicates = 0
+        errors = []
+        fit_files_downloaded = []
+        
+        # Для каждой активности проверяем дубликаты и скачиваем .fit файл
+        for activity in activities:
+            try:
+                # Проверяем, не является ли активность дубликатом через бэкенд
+                async with httpx.AsyncClient() as client:
+                    check_response = await client.post(
+                        f"{garmin_service.backend_url}/garmin/check-duplicate/{user_id}",
+                        json={
+                            "activity_id": activity.activity_id,
+                            "activity_type": activity.activity_type,
+                            "start_time": activity.start_time.isoformat(),
+                            "distance": activity.distance,
+                            "duration": activity.duration
+                        },
+                        timeout=10.0
+                    )
+                    
+                    if check_response.status_code == 200:
+                        duplicate_check = check_response.json()
+                        if duplicate_check.get("is_duplicate", False):
+                            skipped_duplicates += 1
+                            continue
+                
+                # Скачиваем .fit файл
+                fit_path = await garmin_service.download_fit_file(user_id, activity.activity_id)
+                if fit_path:
+                    fit_files_downloaded.append(fit_path)
+                    
+                    # Отправляем .fit файл на обработку в бэкенд
+                    async with httpx.AsyncClient() as client:
+                        with open(fit_path, 'rb') as fit_file:
+                            files = {'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')}
+                            data = {
+                                'user_id': user_id, 
+                                'source': 'garmin_hourly_sync',
+                                'garmin_activity_id': activity.activity_id
+                            }
+                            
+                            upload_response = await client.post(
+                                f"{garmin_service.backend_url}/activities/garmin-upload",
+                                files=files,
+                                data=data,
+                                timeout=60.0
+                            )
+                            
+                            if upload_response.status_code == 200:
+                                processed += 1
+                            else:
+                                errors.append(f"Ошибка обработки файла {activity.activity_id}: {upload_response.text}")
+                else:
+                    errors.append(f"Не удалось скачать .fit файл для активности {activity.activity_id}")
+                    
+            except Exception as e:
+                errors.append(f"Ошибка обработки активности {activity.activity_id}: {str(e)}")
+        
+        # Очищаем временные файлы
+        for fit_path in fit_files_downloaded:
+            try:
+                if os.path.exists(fit_path):
+                    os.remove(fit_path)
+                    temp_dir = os.path.dirname(fit_path)
+                    if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                        os.rmdir(temp_dir)
+            except Exception as e:
+                errors.append(f"Ошибка очистки временного файла {fit_path}: {str(e)}")
+        
+        return GarminSyncResult(
+            success=len(errors) == 0,
+            processed=processed,
+            skipped_duplicates=skipped_duplicates,
+            errors=errors,
+            message=f"Обработано: {processed}, пропущено дубликатов: {skipped_duplicates}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка синхронизации активностей за сегодня: {str(e)}"
+        )
+
+
 @router.get("/recent/{user_id}", response_model=List[GarminActivity])
 async def get_recent_activities(
     user_id: int,
