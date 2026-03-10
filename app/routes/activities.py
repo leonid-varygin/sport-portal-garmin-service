@@ -21,58 +21,6 @@ def get_garmin_service(request: Request) -> GarminService:
     return request.app.state.garmin_service
 
 
-@router.get("/{user_id}", response_model=List[GarminActivity])
-async def get_activities(
-    user_id: int,
-    start_date: Optional[str] = Query(None, description="Начальная дата в формате YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="Конечная дата в формате YYYY-MM-DD"),
-    garmin_service: GarminService = Depends(get_garmin_service)
-):
-    """
-    Получить активности пользователя из Garmin
-    
-    Args:
-        user_id: ID пользователя
-        start_date: Начальная дата
-        end_date: Конечная дата
-        garmin_service: Сервис Garmin
-        
-    Returns:
-        List[GarminActivity]: Список активностей
-    """
-    try:
-        # Конвертируем строки в даты если указаны
-        start_dt = None
-        end_dt = None
-        
-        if start_date:
-            try:
-                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Неверный формат начальной даты. Используйте YYYY-MM-DD"
-                )
-        
-        if end_date:
-            try:
-                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Неверный формат конечной даты. Используйте YYYY-MM-DD"
-                )
-        
-        activities = await garmin_service.get_activities(user_id, start_dt, end_dt)
-        return activities
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ошибка получения активностей: {str(e)}"
-        )
-
-
 @router.post("/sync/{user_id}", response_model=GarminSyncResult)
 async def sync_activities(
     user_id: int,
@@ -499,4 +447,56 @@ async def download_fit_file(
         raise HTTPException(
             status_code=500,
             detail=f"Ошибка скачивания FIT файла: {str(e)}"
+        )
+
+
+@router.get("/{user_id}", response_model=List[GarminActivity])
+async def get_activities(
+    user_id: int,
+    start_date: Optional[str] = Query(None, description="Начальная дата в формате YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="Конечная дата в формате YYYY-MM-DD"),
+    garmin_service: GarminService = Depends(get_garmin_service)
+):
+    """
+    Получить активности пользователя из Garmin
+    
+    Args:
+        user_id: ID пользователя
+        start_date: Начальная дата
+        end_date: Конечная дата
+        garmin_service: Сервис Garmin
+        
+    Returns:
+        List[GarminActivity]: Список активностей
+    """
+    try:
+        # Конвертируем строки в даты если указаны
+        start_dt = None
+        end_dt = None
+        
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Неверный формат начальной даты. Используйте YYYY-MM-DD"
+                )
+        
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Неверный формат конечной даты. Используйте YYYY-MM-DD"
+                )
+        
+        activities = await garmin_service.get_activities(user_id, start_dt, end_dt)
+        return activities
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка получения активностей: {str(e)}"
         )
