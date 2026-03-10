@@ -120,32 +120,11 @@ async def sync_today_activities(
                             skipped_duplicates += 1
                             continue
                 
-                # Скачиваем .fit файл
+                # Скачиваем .fit файл (он автоматически отправится на бэкенд внутри download_fit_file)
                 fit_path = await garmin_service.download_fit_file(user_id, activity.activity_id)
                 if fit_path:
                     fit_files_downloaded.append(fit_path)
-                    
-                    # Отправляем .fit файл на обработку в бэкенд
-                    async with httpx.AsyncClient() as client:
-                        with open(fit_path, 'rb') as fit_file:
-                            files = {'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')}
-                            data = {
-                                'user_id': user_id, 
-                                'source': 'garmin_hourly_sync',
-                                'garmin_activity_id': activity.activity_id
-                            }
-                            
-                            upload_response = await client.post(
-                                f"{garmin_service.backend_url}/activities/garmin-upload",
-                                files=files,
-                                data=data,
-                                timeout=60.0
-                            )
-                            
-                            if upload_response.status_code == 200:
-                                processed += 1
-                            else:
-                                errors.append(f"Ошибка обработки файла {activity.activity_id}: {upload_response.text}")
+                    processed += 1
                 else:
                     errors.append(f"Не удалось скачать .fit файл для активности {activity.activity_id}")
                     
@@ -272,33 +251,12 @@ async def initial_sync_activities(
                             skipped_duplicates += 1
                             continue
                 
-                # Скачиваем .fit файл
+                # Скачиваем .fit файл (он автоматически отправится на бэкенд внутри download_fit_file)
                 fit_path = await garmin_service.download_fit_file(user_id, activity.activity_id)
                 if fit_path:
                     downloaded += 1
+                    processed += 1
                     fit_files_downloaded.append(fit_path)
-                    
-                    # Отправляем .fit файл на обработку в бэкенд
-                    async with httpx.AsyncClient() as client:
-                        with open(fit_path, 'rb') as fit_file:
-                            files = {'file': (os.path.basename(fit_path), fit_file, 'application/octet-stream')}
-                            data = {
-                                'user_id': user_id, 
-                                'source': 'garmin_initial_sync',
-                                'garmin_activity_id': activity.activity_id
-                            }
-                            
-                            upload_response = await client.post(
-                                f"{garmin_service.backend_url}/activities/garmin-upload",
-                                files=files,
-                                data=data,
-                                timeout=60.0
-                            )
-                            
-                            if upload_response.status_code == 200:
-                                processed += 1
-                            else:
-                                errors.append(f"Ошибка обработки файла {activity.activity_id}: {upload_response.text}")
                 else:
                     errors.append(f"Не удалось скачать .fit файл для активности {activity.activity_id}")
                     
