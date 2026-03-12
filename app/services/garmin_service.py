@@ -508,6 +508,10 @@ class GarminService:
     async def _save_tokens_to_backend(self, user_id: int, username: str, password: str, user_info: Dict[str, Any]):
         """Сохранение токенов на основном бэкенде"""
         try:
+            headers = {
+                "X-Service-API-Key": settings.service_api_key,
+                "Content-Type": "application/json"
+            }
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{settings.backend_url}/garmin/save-tokens",
@@ -518,9 +522,11 @@ class GarminService:
                         "garmin_user_id": str(user_info.get('displayName', '')),
                         "display_name": user_info.get('displayName', '')
                     },
+                    headers=headers,
                     timeout=10.0
                 )
                 response.raise_for_status()
+                logger.info(f"Successfully saved Garmin tokens to backend for user {user_id}")
         except Exception as e:
             logger.error(f"Failed to save Garmin tokens to backend: {str(e)}")
             # Не прерываем процесс, так как это не критично для авторизации
@@ -528,9 +534,13 @@ class GarminService:
     async def _get_tokens_from_backend(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Получение токенов с основного бэкенда с улучшенной обработкой ошибок"""
         try:
+            headers = {
+                "X-Service-API-Key": settings.service_api_key
+            }
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{settings.backend_url}/garmin/get-tokens/{user_id}",
+                    headers=headers,
                     timeout=10.0
                 )
             if response.status_code == 200:
@@ -563,12 +573,18 @@ class GarminService:
                 "activity": activity_dict
             }
             
+            headers = {
+                "X-Service-API-Key": settings.service_api_key,
+                "Content-Type": "application/json"
+            }
+            
             logger.info(f"Sending Garmin activity {activity.activity_id} to backend")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{settings.backend_url}/garmin/activity",
                     json=activity_data,
+                    headers=headers,
                     timeout=30.0
                 )
                 
@@ -704,12 +720,17 @@ class GarminService:
     async def _notify_backend_disconnection(self, user_id: int):
         """Уведомление бэкенда об отключении"""
         try:
+            headers = {
+                "X-Service-API-Key": settings.service_api_key
+            }
             async with httpx.AsyncClient() as client:
                 response = await client.delete(
                     f"{settings.backend_url}/garmin/disconnect/{user_id}",
+                    headers=headers,
                     timeout=10.0
                 )
                 response.raise_for_status()
+                logger.info(f"Successfully notified backend about Garmin disconnection for user {user_id}")
         except Exception as e:
             logger.error(f"Failed to notify backend about Garmin disconnection: {str(e)}")
     

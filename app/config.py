@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Настройки безопасности
     secret_key: str = "your-secret-key-change-in-production"
     
+    # API Key для авторизации запросов к основному бэкенду
+    service_api_key: str = "garmin-service-secret-key"
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
