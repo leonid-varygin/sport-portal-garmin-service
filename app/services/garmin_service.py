@@ -25,12 +25,16 @@ logger = logging.getLogger(__name__)
 
 
 class GarminService:
-    """Сервис для работы с Garmin Connect"""
+    """Сервис для работы с Garmin Connect (garminconnect 0.3.x)"""
+    
+    # Кулдаун при rate limit (секунды) — 30 минут
+    RATE_LIMIT_COOLDOWN_SECONDS = 1800
     
     def __init__(self):
         self.active_sessions: Dict[int, Garmin] = {}  # user_id -> Garmin client
         self.session_cache: Dict[int, Dict[str, Any]] = {}  # Кеш сессий
         self.backend_url = settings.backend_url
+        self._rate_limited_until: Dict[int, datetime] = {}  # user_id -> до какого времени rate limited
         
     async def authenticate(self, auth_request: GarminAuthRequest) -> GarminAuthResponse:
         """
@@ -43,15 +47,24 @@ class GarminService:
             GarminAuthResponse: Результат авторизации
         """
         try:
-            # Создаем клиент Garmin
-            garmin_client = Garmin(auth_request.username, auth_request.password)
+            token_manager = TokenManager(auth_request.user_id)
             
-            # Выполняем вход (синхронный вызов в asyncio)
+            # Создаем клиент Garmin с email/password
+            garmin_client = Garmin(
+                email=auth_request.username,
+                password=auth_request.password,
+            )
+            
+            # Выполняем вход с сохранением токенов (garminconnect 0.3.x API)
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, garmin_client.login)
+            tokenstore_path = str(token_manager.token_file)
+            await loop.run_in_executor(None, garmin_client.login, tokenstore_path)
             
-            # Получаем информацию о пользователе
-            user_info = await loop.run_in_executor(None, garmin_client.get_user_profile)
+            logger.info(f"Successfully logged in user {auth_request.user_id}")
+
+            # Получаем информацию о пользователе из профиля клиента
+            display_name = getattr(garmin_client, 'display_name', '') or auth_request.username
+            full_name = getattr(garmin_client, 'full_name', '') or display_name
             
             # Сохраняем сессию
             self.active_sessions[auth_request.user_id] = garmin_client
@@ -60,21 +73,20 @@ class GarminService:
             self.session_cache[auth_request.user_id] = {
                 'username': auth_request.username,
                 'password': auth_request.password,
-                'garmin_user_id': str(user_info.get('displayName', '')),
-                'display_name': user_info.get('displayName', ''),
+                'garmin_user_id': display_name,
+                'display_name': display_name,
+                'full_name': full_name,
                 'created_at': datetime.now(),
                 'last_used': datetime.now()
             }
             
-            # Сохраняем токены в файлы для автоматической переавторизации
-            token_manager = TokenManager(auth_request.user_id)
-            token_save_success = token_manager.save_tokens(garmin_client)
-            if token_save_success:
-                logger.info(f"Successfully saved tokens to files for user {auth_request.user_id}")
-            else:
-                logger.warning(f"Failed to save tokens to files for user {auth_request.user_id}")
+            logger.info(f"Tokens automatically saved by login() for user {auth_request.user_id}")
             
             # Отправляем токены в основной бэкенд для сохранения
+            user_info = {
+                'displayName': display_name,
+                'fullName': full_name
+            }
             await self._save_tokens_to_backend(
                 auth_request.user_id,
                 auth_request.username,
@@ -86,8 +98,8 @@ class GarminService:
                 success=True,
                 status=GarminAuthStatus.CONNECTED,
                 message="Успешная авторизация в Garmin Connect",
-                garmin_user_id=str(user_info.get('displayName', '')),
-                display_name=user_info.get('displayName', '')
+                garmin_user_id=display_name,
+                display_name=display_name
             )
             
         except Exception as e:
@@ -137,10 +149,14 @@ class GarminService:
                 user_info = await loop.run_in_executor(None, garmin_client.get_user_profile)
                 session_info = self.session_cache.get(user_id, {})
                 
+                display_name = session_info.get('display_name', '') or str(
+                    user_info.get('displayName', '') if user_info else ''
+                )
+                
                 return GarminConnectionStatus(
                     connected=True,
-                    garmin_user_id=str(user_info.get('displayName', '')),
-                    display_name=user_info.get('displayName', ''),
+                    garmin_user_id=display_name,
+                    display_name=display_name,
                     last_sync=session_info.get('last_used'),
                     message="Подключено к Garmin Connect"
                 )
@@ -206,22 +222,24 @@ class GarminService:
             
             loop = asyncio.get_event_loop()
             
-            # Получаем активности - используем правильные параметры для garminconnect
+            # Получаем активности
             try:
                 # Пробуем сначала без параметров
                 activities_data = await loop.run_in_executor(None, garmin_client.get_activities)
             except Exception as e:
                 logger.warning(f"Failed to get activities without params: {str(e)}")
                 
-                # Пробуем с числовыми параметрами (start, end) где start=0, end=количество дней
+                # Пробуем с числовыми параметрами (start, end)
                 try:
                     if start_date and end_date:
-                        # Конвертируем даты в количество дней от начала
                         days_diff = (end_date - start_date).days
-                        activities_data = await loop.run_in_executor(None, garmin_client.get_activities, 0, days_diff)
+                        activities_data = await loop.run_in_executor(
+                            None, garmin_client.get_activities, 0, days_diff
+                        )
                     else:
-                        # Получаем активности за последние 30 дней по умолчанию
-                        activities_data = await loop.run_in_executor(None, garmin_client.get_activities, 0, 30)
+                        activities_data = await loop.run_in_executor(
+                            None, garmin_client.get_activities, 0, 30
+                        )
                 except Exception as e2:
                     logger.error(f"All attempts to get activities failed: {str(e2)}")
                     raise Exception(f"Не удалось получить активности Garmin: {str(e2)}")
@@ -254,7 +272,6 @@ class GarminService:
             GarminSyncResult: Результат синхронизации
         """
         try:
-            # Получаем активности за последние 7 дней
             end_date = datetime.now()
             start_date = end_date - timedelta(days=7)
             
@@ -264,7 +281,6 @@ class GarminService:
             skipped_count = 0
             errors = []
             
-            # Отправляем активности на основной бэкенд
             for activity in activities:
                 try:
                     success = await self._send_activity_to_backend(user_id, activity)
@@ -291,48 +307,72 @@ class GarminService:
                 message="Синхронизация не удалась"
             )
     
+    def _is_rate_limited(self, user_id: int) -> bool:
+        """Проверить, находится ли пользователь в кулдауне после rate limit"""
+        if user_id not in self._rate_limited_until:
+            return False
+        if datetime.now() < self._rate_limited_until[user_id]:
+            return True
+        # Кулдаун истёк, убираем
+        del self._rate_limited_until[user_id]
+        return False
+    
+    def _set_rate_limited(self, user_id: int):
+        """Установить кулдаун после получения 429 от Garmin"""
+        self._rate_limited_until[user_id] = datetime.now() + timedelta(seconds=self.RATE_LIMIT_COOLDOWN_SECONDS)
+        logger.warning(f"User {user_id} rate limited until {self._rate_limited_until[user_id].isoformat()}")
+
     async def _restore_session(self, user_id: int) -> bool:
         """Восстановление сессии пользователя с автоматической переавторизацией"""
         try:
-            # Сначала пробуем восстановить из файлов токенов
+            # Проверяем кулдаун после rate limit
+            if self._is_rate_limited(user_id):
+                logger.info(f"User {user_id} is in rate limit cooldown, skipping restore")
+                return False
+            
             token_manager = TokenManager(user_id)
             
+            # Сначала пробуем восстановить из файлов токенов
             if token_manager.are_tokens_valid():
-                logger.info(f"Found valid tokens in files for user {user_id}, attempting token restoration")
+                logger.info(f"Found valid tokens for user {user_id}, attempting token restoration")
                 
                 try:
-                    # Пробуем создать клиент с токенами
+                    # Создаем клиент и загружаем токены через login(tokenstore)
                     garmin_client = Garmin()
+                    loop = asyncio.get_event_loop()
                     
-                    # Восстанавливаем токены в клиенте
-                    if token_manager.restore_tokens_to_client(garmin_client):
-                        # Проверяем валидность сессии
-                        loop = asyncio.get_event_loop()
-                        try:
-                            user_info = await loop.run_in_executor(None, garmin_client.get_user_profile)
-                            logger.info(f"Successfully restored session from tokens for user {user_id}")
-                            
-                            # Сохраняем сессию
-                            self.active_sessions[user_id] = garmin_client
-                            self.session_cache[user_id] = {
-                                'username': '',  # Не храним пароль при восстановлении из токенов
-                                'password': '',  # Не храним пароль при восстановлении из токенов
-                                'garmin_user_id': str(user_info.get('displayName', '')),
-                                'display_name': user_info.get('displayName', ''),
-                                'created_at': datetime.now(),
-                                'last_used': datetime.now(),
-                                'restored_from_tokens': True
-                            }
-                            
-                            return True
-                            
-                        except Exception as token_error:
-                            logger.warning(f"Token restoration failed for user {user_id}: {str(token_error)}")
-                            # Токены невалидны, удаляем их
-                            token_manager.delete_tokens()
-                            logger.info(f"Deleted invalid tokens for user {user_id}")
-                except Exception as restore_error:
-                    logger.warning(f"Failed to restore tokens for user {user_id}: {str(restore_error)}")
+                    tokenstore_path = str(token_manager.token_file)
+                    await loop.run_in_executor(None, garmin_client.login, tokenstore_path)
+                    
+                    display_name = getattr(garmin_client, 'display_name', '') or ''
+                    full_name = getattr(garmin_client, 'full_name', '') or display_name
+                    
+                    logger.info(f"Successfully restored session from tokens for user {user_id}")
+                    
+                    # Сохраняем сессию
+                    self.active_sessions[user_id] = garmin_client
+                    self.session_cache[user_id] = {
+                        'username': '',
+                        'password': '',
+                        'garmin_user_id': display_name,
+                        'display_name': display_name,
+                        'full_name': full_name,
+                        'created_at': datetime.now(),
+                        'last_used': datetime.now(),
+                        'restored_from_tokens': True
+                    }
+                    
+                    return True
+                    
+                except Exception as token_error:
+                    token_error_str = str(token_error)
+                    logger.warning(f"Token restoration failed for user {user_id}: {token_error_str}")
+                    
+                    if "429" in token_error_str or "rate limit" in token_error_str.lower():
+                        self._set_rate_limited(user_id)
+                    
+                    token_manager.delete_tokens()
+                    logger.info(f"Deleted invalid tokens for user {user_id}")
             
             # Если не удалось восстановить из токенов, пробуем получить данные с бэкенда
             logger.info(f"Attempting to restore session from backend for user {user_id}")
@@ -341,22 +381,30 @@ class GarminService:
                 logger.warning(f"No tokens found for user {user_id}")
                 return False
             
-            # Проверяем наличие обязательных полей
             if not tokens.get('username') or not tokens.get('password'):
                 logger.error(f"Invalid tokens for user {user_id}: missing username or password")
                 return False
             
-            # Создаем новый клиент и выполняем вход с несколькими попытками
-            garmin_client = Garmin(tokens['username'], tokens['password'])
+            # Создаем новый клиент и выполняем вход
+            garmin_client = Garmin(
+                email=tokens['username'],
+                password=tokens['password'],
+            )
             loop = asyncio.get_event_loop()
             
-            # Пробуем войти с несколькими попытками и экспоненциальной задержкой
-            for attempt in range(5):
+            # Пробуем войти (максимум 2 попытки)
+            max_attempts = 2
+            for attempt in range(max_attempts):
                 try:
-                    logger.info(f"Attempting Garmin login for user {user_id}, attempt {attempt + 1}/5")
-                    await loop.run_in_executor(None, garmin_client.login)
+                    logger.info(f"Attempting Garmin login for user {user_id}, attempt {attempt + 1}/{max_attempts}")
+                    
+                    tokenstore_path = str(token_manager.token_file)
+                    await loop.run_in_executor(None, garmin_client.login, tokenstore_path)
                     
                     logger.info(f"Successfully logged in user {user_id} on attempt {attempt + 1}")
+                    
+                    display_name = getattr(garmin_client, 'display_name', '') or tokens.get('display_name', '')
+                    full_name = getattr(garmin_client, 'full_name', '') or ''
                     
                     # Сохраняем сессию
                     self.active_sessions[user_id] = garmin_client
@@ -364,30 +412,32 @@ class GarminService:
                         'username': tokens['username'],
                         'password': tokens['password'],
                         'garmin_user_id': tokens.get('garmin_user_id', ''),
-                        'display_name': tokens.get('display_name', ''),
+                        'display_name': display_name,
+                        'full_name': full_name,
                         'created_at': datetime.now(),
                         'last_used': datetime.now(),
                         'restored_from_tokens': False
                     }
                     
-                    # Сохраняем токены в файлы для будущего использования
-                    token_save_success = token_manager.save_tokens(garmin_client)
-                    if token_save_success:
-                        logger.info(f"Successfully saved tokens to files after login for user {user_id}")
-                    else:
-                        logger.warning(f"Failed to save tokens to files after login for user {user_id}")
+                    # Токены уже сохранены login() в tokenstore_path
+                    logger.info(f"Tokens saved by login() for user {user_id}")
                     
                     return True
                     
                 except Exception as e:
-                    logger.warning(f"Garmin login attempt {attempt + 1} failed for user {user_id}: {str(e)}")
+                    error_str = str(e)
+                    logger.warning(f"Garmin login attempt {attempt + 1} failed for user {user_id}: {error_str}")
                     
-                    if attempt == 4:  # Последняя попытка
+                    # При 429 Rate Limit не повторяем
+                    if "429" in error_str or "rate limit" in error_str.lower():
+                        logger.warning(f"Rate limited by Garmin for user {user_id}, stopping retries")
+                        return False
+                    
+                    if attempt == max_attempts - 1:
                         logger.error(f"All Garmin login attempts failed for user {user_id}")
-                        raise e
+                        return False
                     
-                    # Экспоненциальная задержка: 2с, 4с, 8с, 16с
-                    delay = min(2 ** attempt, 16)
+                    delay = 5 * (attempt + 1)
                     logger.info(f"Waiting {delay}s before retry for user {user_id}")
                     await asyncio.sleep(delay)
             
@@ -400,7 +450,6 @@ class GarminService:
     async def _ensure_valid_session(self, user_id: int) -> Optional[Garmin]:
         """
         Убедиться что сессия пользователя активна и валидна
-        Автоматически восстанавливает сессию если необходимо с улучшенной обработкой ошибок
         
         Args:
             user_id: ID пользователя
@@ -409,7 +458,6 @@ class GarminService:
             Optional[Garmin]: Валидный клиент Garmin или None
         """
         try:
-            # Если сессии нет, пробуем восстановить
             if user_id not in self.active_sessions:
                 logger.info(f"No active session for user {user_id}, attempting to restore")
                 restored = await self._restore_session(user_id)
@@ -417,12 +465,11 @@ class GarminService:
             
             garmin_client = self.active_sessions[user_id]
             
-            # Проверяем валидность сессии пробуя получить профиль
+            # Проверяем валидность сессии
             try:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, garmin_client.get_user_profile)
                 
-                # Обновляем время последнего использования
                 if user_id in self.session_cache:
                     self.session_cache[user_id]['last_used'] = datetime.now()
                 
@@ -431,32 +478,19 @@ class GarminService:
             except Exception as e:
                 logger.warning(f"Garmin session invalid for user {user_id}, attempting refresh: {str(e)}")
                 
-                # Сессия недействительна, пробуем восстановить с несколькими попытками
                 await self._cleanup_session(user_id)
                 
-                # Пробуем восстановить с несколькими попытками
-                for attempt in range(3):
-                    try:
-                        logger.info(f"Attempting to restore Garmin session for user {user_id}, attempt {attempt + 1}")
-                        restored = await self._restore_session(user_id)
-                        
-                        if restored:
-                            logger.info(f"Successfully restored Garmin session for user {user_id} on attempt {attempt + 1}")
-                            return self.active_sessions.get(user_id)
-                        
-                        # Если не удалось, ждем перед следующей попыткой
-                        if attempt < 2:
-                            delay = 2 ** attempt  # Экспоненциальная задержка
-                            logger.info(f"Waiting {delay}s before next restore attempt for user {user_id}")
-                            await asyncio.sleep(delay)
-                            
-                    except Exception as restore_error:
-                        logger.error(f"Restore attempt {attempt + 1} failed for user {user_id}: {str(restore_error)}")
-                        if attempt < 2:
-                            delay = 2 ** attempt
-                            await asyncio.sleep(delay)
+                try:
+                    restored = await self._restore_session(user_id)
+                    
+                    if restored:
+                        logger.info(f"Successfully restored Garmin session for user {user_id}")
+                        return self.active_sessions.get(user_id)
+                    
+                except Exception as restore_error:
+                    logger.error(f"Restore attempt failed for user {user_id}: {str(restore_error)}")
                 
-                logger.error(f"Failed to restore Garmin session for user {user_id} after 3 attempts")
+                logger.warning(f"Failed to restore Garmin session for user {user_id}")
                 return None
                 
         except Exception as e:
@@ -494,14 +528,25 @@ class GarminService:
     
     def _parse_auth_error(self, error_message: str) -> str:
         """Парсинг ошибки авторизации"""
-        if "invalid credentials" in error_message.lower() or "authentication failed" in error_message.lower():
+        error_lower = error_message.lower()
+        
+        if "429" in error_message or "rate limit" in error_lower:
+            return "Слишком много попыток входа. Garmin временно заблокировал запросы. Подождите 10-15 минут и попробуйте снова."
+        elif "cloudflare" in error_lower:
+            return "Cloudflare заблокировал запрос к Garmin. Подождите 10-15 минут и попробуйте снова."
+        
+        if "invalid credentials" in error_lower or "wrong credentials" in error_lower:
             return "Неверный логин или пароль Garmin Connect"
-        elif "two factor" in error_message.lower() or "2fa" in error_message.lower():
+        elif "authentication failed" in error_lower and "rate limit" not in error_lower and "429" not in error_message:
+            return "Неверный логин или пароль Garmin Connect"
+        elif "two factor" in error_lower or "2fa" in error_lower or "mfa" in error_lower:
             return "Требуется двухфакторная аутентификация. Пожалуйста, отключите 2FA в настройках Garmin Connect или используйте app-пароль."
-        elif "account locked" in error_message.lower():
+        elif "account locked" in error_lower:
             return "Учетная запись Garmin заблокирована. Пожалуйста, обратитесь в поддержку Garmin."
-        elif "connection" in error_message.lower():
+        elif "connection" in error_lower:
             return "Ошибка подключения к серверам Garmin. Попробуйте позже."
+        elif "403" in error_message:
+            return "Доступ к Garmin заблокирован (403). Подождите некоторое время и попробуйте снова."
         else:
             return f"Ошибка авторизации: {error_message}"
     
@@ -529,10 +574,9 @@ class GarminService:
                 logger.info(f"Successfully saved Garmin tokens to backend for user {user_id}")
         except Exception as e:
             logger.error(f"Failed to save Garmin tokens to backend: {str(e)}")
-            # Не прерываем процесс, так как это не критично для авторизации
     
     async def _get_tokens_from_backend(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Получение токенов с основного бэкенда с улучшенной обработкой ошибок"""
+        """Получение токенов с основного бэкенда"""
         try:
             headers = {
                 "X-Service-API-Key": settings.service_api_key
@@ -561,7 +605,6 @@ class GarminService:
     async def _send_activity_to_backend(self, user_id: int, activity: GarminActivity) -> bool:
         """Отправка активности на основной бэкенд"""
         try:
-            # Конвертируем datetime в ISO строки для JSON сериализации
             activity_dict = activity.dict()
             if 'start_time' in activity_dict and activity_dict['start_time']:
                 activity_dict['start_time'] = activity_dict['start_time'].isoformat()
@@ -611,31 +654,26 @@ class GarminService:
             List[GarminActivity]: Список последних активностей
         """
         try:
-            # Убедимся что сессия активна и валидна
             garmin_client = await self._ensure_valid_session(user_id)
             if not garmin_client:
                 raise Exception("Нет активного подключения к Garmin")
             
             loop = asyncio.get_event_loop()
             
-            # Получаем все активности без ограничения по дате
             activities_data = await loop.run_in_executor(None, garmin_client.get_activities)
             
             if not activities_data:
                 return []
             
-            # Сортируем по дате начала (новые первые) и ограничиваем количество
             activities_data.sort(key=lambda x: x.get('startTimeLocal', ''), reverse=True)
             limited_data = activities_data[:limit]
             
-            # Конвертируем в нашу модель
             activities = []
             for activity in limited_data:
                 garmin_activity = self._convert_to_garmin_activity(activity)
                 if garmin_activity:
                     activities.append(garmin_activity)
             
-            # Обновляем время последнего использования сессии
             if user_id in self.session_cache:
                 self.session_cache[user_id]['last_used'] = datetime.now()
             
@@ -657,14 +695,12 @@ class GarminService:
             Optional[str]: Путь к .fit файлу или None в случае ошибки
         """
         try:
-            # Убедимся что сессия активна и валидна
             garmin_client = await self._ensure_valid_session(user_id)
             if not garmin_client:
                 raise Exception("Нет активного подключения к Garmin")
             
             loop = asyncio.get_event_loop()
             
-            # Скачиваем zip архив
             logger.info(f"Downloading FIT file for activity {activity_id}")
             content = await loop.run_in_executor(
                 None, 
@@ -677,30 +713,24 @@ class GarminService:
                 logger.error(f"No content received for activity {activity_id}")
                 return None
             
-            # Создаем временную директорию
             temp_dir = tempfile.mkdtemp(prefix=f"garmin_{user_id}_")
             zip_path = os.path.join(temp_dir, f"{activity_id}.zip")
             
-            # Сохраняем zip файл
             with open(zip_path, 'wb') as f:
                 f.write(content)
             
-            # Распаковываем архив
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
             
-            # Ищем .fit файл
             for file in os.listdir(temp_dir):
                 if file.endswith('.fit'):
                     fit_path = os.path.join(temp_dir, file)
                     logger.info(f"Successfully extracted FIT file: {fit_path}")
                     
-                    # Отправляем FIT файл на бэкенд для обработки
                     await self._send_fit_file_to_backend(user_id, fit_path, activity_id)
                     
                     return fit_path
             
-            # Если .fit файл не найден
             logger.error(f"No .fit file found in archive for activity {activity_id}")
             self._cleanup_temp_directory(temp_dir)
             return None
@@ -748,7 +778,6 @@ class GarminService:
             token_manager = TokenManager(user_id)
             token_info = token_manager.get_token_info()
             
-            # Добавляем информацию о сессии
             if user_id in self.session_cache:
                 session_info = self.session_cache[user_id]
                 token_info.update({
@@ -784,7 +813,6 @@ class GarminService:
         try:
             logger.info(f"Sending FIT file {fit_path} to backend for activity {activity_id}")
             
-            # Читаем файл в память перед отправкой
             with open(fit_path, 'rb') as fit_file:
                 file_content = fit_file.read()
             
@@ -799,7 +827,6 @@ class GarminService:
                 'garmin_activity_id': activity_id
             }
             
-            # Пробуем отправить без авторизации (если эндпоинт позволяет)
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{settings.backend_url}/activities/garmin-upload",
@@ -814,13 +841,10 @@ class GarminService:
                 else:
                     logger.warning(f"Backend FIT upload response: {response.text}")
                     
-                    # Если 401 (не авторизован), пробуем получить токены и повторить
                     if response.status_code == 401:
                         logger.info("Got 401, trying to get tokens and retry...")
                         tokens = await self._get_tokens_from_backend(user_id)
                         if tokens:
-                            # Здесь нужно получить JWT токен пользователя, но у нас нет прямого доступа
-                            # Пока просто логируем проблему
                             logger.warning("Cannot retry - need user JWT token for backend authentication")
                         
         except Exception as e:
