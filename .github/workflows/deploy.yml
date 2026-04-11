@@ -1,5 +1,6 @@
 # Автоматический деплой Garmin Service на продакшен
 # Запускается при пуше в ветку master/main
+# Использует Tailscale для SSH (обходит роутер/sing-box)
 
 name: Deploy Garmin Service
 
@@ -8,19 +9,26 @@ on:
     branches:
       - master
       - main
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch: # Ручной запуск
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
       - name: Deploy Garmin Service to Server
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SERVER_HOST }}
+          host: ${{ secrets.TAILSCALE_SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SERVER_PORT || 22 }}
+          port: 22
           script: |
             echo ">>> Деплой Garmin Service: $(date)"
             cd /home/lvar/sport-portal/garmin-service
