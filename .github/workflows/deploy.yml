@@ -18,23 +18,15 @@ jobs:
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.TAILSCALE_SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy Garmin Service to Server
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.TAILSCALE_SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
-          script: |
-            echo ">>> Деплой Garmin Service: $(date)"
-            cd /home/lvar/sport-portal/garmin-service
-            git fetch --all
-            git reset --hard origin/master
-            cd /home/lvar/sport-portal
-            chmod +x scripts/deploy-garmin.sh
-            ./scripts/deploy-garmin.sh
-            echo ">>> Деплой Garmin Service завершён!"
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.TAILSCALE_SERVER_HOST }} "cd /home/lvar/sport-portal/garmin-service && git fetch --all && git reset --hard origin/master && cd /home/lvar/sport-portal && chmod +x scripts/deploy-garmin.sh && ./scripts/deploy-garmin.sh"
