@@ -1,6 +1,12 @@
 # Автоматический деплой Garmin Service на продакшен
 # Запускается при пуше в ветку master/main
 # Использует Tailscale для SSH (обходит роутер/sing-box)
+#
+# Требуемые секреты в GitHub (Settings → Secrets → Actions):
+#   TS_AUTHKEY            — Tailscale auth key (https://login.tailscale.com/admin/settings/keys)
+#   TAILSCALE_SERVER_HOST — 100.122.8.89
+#   SERVER_USER           — lvar
+#   SSH_PRIVATE_KEY       — приватный SSH ключ
 
 name: Deploy Garmin Service
 
@@ -9,24 +15,25 @@ on:
     branches:
       - master
       - main
-  workflow_dispatch: # Ручной запуск
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TS_AUTHKEY }}
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscaled --state=mem: --tun=userspace-networking --socks5-server=localhost:1055 &
+          sleep 3
+          sudo tailscale up --authkey=${{ secrets.TS_AUTHKEY }} --accept-routes
 
       - name: Setup SSH Key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.TAILSCALE_SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy Garmin Service to Server
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.TAILSCALE_SERVER_HOST }} "cd /home/lvar/sport-portal/garmin-service && git fetch --all && git reset --hard origin/master && cd /home/lvar/sport-portal && chmod +x scripts/deploy-garmin.sh && ./scripts/deploy-garmin.sh"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.TAILSCALE_SERVER_HOST }} "/home/lvar/sport-portal/scripts/deploy-garmin.sh"
